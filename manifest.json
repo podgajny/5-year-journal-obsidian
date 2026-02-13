@@ -1,0 +1,10 @@
+{
+	"id": "five-year-journal",
+	"name": "Five-Year Journal",
+	"version": "0.1.0",
+	"minAppVersion": "1.5.0",
+	"description": "Sidebar view showing same-day journal entries from previous years.",
+	"author": "Lukasz",
+	"authorUrl": "",
+	"isDesktopOnly": false
+}
