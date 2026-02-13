@@ -44,11 +44,3 @@
 	-webkit-box-orient: vertical;
 }
 
-.five-year-journal__toggle {
-	margin-top: 0.3rem;
-	padding: 0;
-	border: 0;
-	background: none;
-	color: var(--text-accent);
-	cursor: pointer;
-}

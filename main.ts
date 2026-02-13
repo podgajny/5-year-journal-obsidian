@@ -229,56 +229,35 @@ class FiveYearJournalView extends ItemView {
 				continue;
 			}
 
-			let expanded = false;
 			const listContainer = section.createDiv({ cls: "five-year-journal__list" });
-			const renderItems = async () => {
-				listContainer.empty();
-				const visibleEntries = expanded ? entries : entries.slice(0, 3);
-
-				for (const entry of visibleEntries) {
-					if (this.renderId !== currentRenderId) {
-						return;
-					}
-
-					const row = listContainer.createDiv({ cls: "five-year-journal__item" });
-					const link = row.createEl("a", {
-						text: entry.file.basename,
-						href: "#",
-						cls: "five-year-journal__link",
-					});
-
-					this.registerDomEvent(link, "click", (event) => {
-						event.preventDefault();
-						this.appRef.workspace.getLeaf(true).openFile(entry.file);
-					});
-
-					try {
-						const preview = await this.journalService.getPreviewSnippet(entry.file);
-						if (preview) {
-							row.createEl("div", {
-								text: preview,
-								cls: "five-year-journal__preview",
-							});
-						}
-					} catch {
-						// File could be deleted/renamed while rendering.
-					}
+			for (const entry of entries) {
+				if (this.renderId !== currentRenderId) {
+					return;
 				}
-			};
 
-			await renderItems();
-
-			if (entries.length > 3) {
-				const toggle = section.createEl("button", {
-					text: `Show ${entries.length - 3} more`,
-					cls: "five-year-journal__toggle",
+				const row = listContainer.createDiv({ cls: "five-year-journal__item" });
+				const link = row.createEl("a", {
+					text: entry.file.basename,
+					href: "#",
+					cls: "five-year-journal__link",
 				});
 
-				this.registerDomEvent(toggle, "click", async () => {
-					expanded = !expanded;
-					toggle.setText(expanded ? "Show less" : `Show ${entries.length - 3} more`);
-					await renderItems();
+				this.registerDomEvent(link, "click", (event) => {
+					event.preventDefault();
+					this.appRef.workspace.getLeaf(true).openFile(entry.file);
 				});
+
+				try {
+					const preview = await this.journalService.getPreviewSnippet(entry.file);
+					if (preview) {
+						row.createEl("div", {
+							text: preview,
+							cls: "five-year-journal__preview",
+						});
+					}
+				} catch {
+					// File could be deleted/renamed while rendering.
+				}
 			}
 		}
 	}
@@ -297,7 +276,7 @@ class FiveYearJournalView extends ItemView {
 		}
 
 		for (let offset = 1; offset <= 4; offset += 1) {
-			const targetYear = activeYear - offset;
+			const targetYear = currentYear - offset;
 			if (usedYears.has(targetYear)) {
 				continue;
 			}
