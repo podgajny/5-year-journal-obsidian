@@ -14,9 +14,8 @@
   - `2 years ago`
   - `3 years ago`
   - `4 years ago`
-- Shows all matching notes per section, initially limited to 3 with:
-  - `Show X more`
-  - `Show less`
+- Historical sections (`1-4 years ago`) are resolved relative to the current calendar year.
+- Shows all matching notes per section without collapsing.
 - Each result is clickable and opens the note.
 - Shows a richer multi-line preview snippet for each result.
 
@@ -83,4 +82,5 @@ When adding/changing features, update:
 
 ### Change notes
 
+- `0.1.1`: Fixed historical year section targeting to be relative to current year and removed show-more collapsing.
 - `0.1.0`: Initial public version with week-based matching, current-year context section, and richer previews.
