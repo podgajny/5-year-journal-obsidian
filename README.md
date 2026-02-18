@@ -74,6 +74,7 @@ npm test
 
 - Source: `main.ts`, `styles.css`
 - Build output: `main.js`
+- CI workflow: `.github/workflows/ci.yml` (`npm ci`, `npm test`, `npm run build` on push/PR)
 
 ## Refresh behavior
 
@@ -101,6 +102,7 @@ When adding/changing features, update:
 
 ### Change notes
 
+- `Unreleased`: Added GitHub Actions CI workflow for automatic install, test, and build on push/PR.
 - `0.1.5`: Added preview size guard (`previewMaxBytes`) and diagnostic logging for preview read failures.
 - `0.1.4`: Added property picker from discovered vault frontmatter fields and value suggestions to reduce filter typos.
 - `0.1.3`: Added configurable filter by any property, configurable date field/range/preview limits, and save-based settings flow.
