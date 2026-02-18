@@ -69,7 +69,7 @@ Matching notes are selected by configurable frontmatter filters and date field.
 ## Build and Test
 - Build: `npm run build`
 - Test: `npm test`
-- CI: `.github/workflows/ci.yml` runs install, test, and build on `push`/`pull_request`.
+- CI: `.github/workflows/ci.yml` runs install, test, and build on `push`/`pull_request` using Node 25.
 
 ## Release Notes Discipline
 When behavior or settings change:
