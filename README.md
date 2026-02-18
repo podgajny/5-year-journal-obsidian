@@ -102,6 +102,7 @@ When adding/changing features, update:
 
 ### Change notes
 
+- `0.1.6`: Hardened preview error logging to avoid printing note file paths.
 - `Unreleased`: Added GitHub Actions CI workflow for automatic install, test, and build on push/PR.
 - `Unreleased`: CI updated to Node 25 to support TypeScript strip-types test execution.
 - `0.1.5`: Added preview size guard (`previewMaxBytes`) and diagnostic logging for preview read failures.

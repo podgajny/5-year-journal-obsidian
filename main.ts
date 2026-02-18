@@ -239,7 +239,7 @@ class FiveYearJournalView extends ItemView {
 				try {
 					return await this.journalService.getPreviewSnippet(file);
 				} catch (error) {
-					logPreviewReadError(file.path, error);
+					logPreviewReadError(error);
 					return null;
 				}
 			});
@@ -582,8 +582,9 @@ function normalizeFrontmatterPrimitive(value: unknown): string | null {
 	return null;
 }
 
-function logPreviewReadError(filePath: string, error: unknown): void {
-	console.debug("[five-year-journal] Failed to build preview for:", filePath, error);
+function logPreviewReadError(error: unknown): void {
+	const message = error instanceof Error ? error.message : String(error);
+	console.debug("[five-year-journal] Failed to build preview snippet.", message);
 }
 
 export default class FiveYearJournalPlugin extends Plugin {

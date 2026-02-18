@@ -1,6 +1,6 @@
 {
 	"name": "five-year-journal",
-	"version": "0.1.5",
+	"version": "0.1.6",
 	"description": "Obsidian plugin: Five-Year Journal",
 	"main": "main.js",
 	"scripts": {

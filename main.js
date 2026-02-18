@@ -469,7 +469,7 @@ var FiveYearJournalView = class extends import_obsidian.ItemView {
         try {
           return await this.journalService.getPreviewSnippet(file);
         } catch (error) {
-          logPreviewReadError(file.path, error);
+          logPreviewReadError(error);
           return null;
         }
       });
@@ -714,8 +714,9 @@ function normalizeFrontmatterPrimitive(value) {
   }
   return null;
 }
-function logPreviewReadError(filePath, error) {
-  console.debug("[five-year-journal] Failed to build preview for:", filePath, error);
+function logPreviewReadError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.debug("[five-year-journal] Failed to build preview snippet.", message);
 }
 var FiveYearJournalPlugin = class extends import_obsidian.Plugin {
   constructor() {
