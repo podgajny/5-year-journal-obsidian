@@ -3,6 +3,8 @@ import {
 	CachedMetadata,
 	ItemView,
 	Plugin,
+	PluginSettingTab,
+	Setting,
 	TFile,
 	WorkspaceLeaf,
 } from "obsidian";
@@ -13,6 +15,13 @@ import {
 	mapWithConcurrency,
 	parseIsoLikeDate,
 } from "./journal-core";
+import {
+	DEFAULT_SETTINGS,
+	FiveYearJournalSettings,
+	filterMatches,
+	normalizeSettings,
+	shouldRebuildIndex,
+} from "./plugin-settings";
 
 const VIEW_TYPE_FIVE_YEAR_JOURNAL = "five-year-journal-view";
 
@@ -23,51 +32,69 @@ type JournalSection = {
 
 type JournalEntry = CoreJournalEntry<TFile>;
 
-export class JournalQueryService {
+class JournalQueryService {
 	private readonly index: JournalIndex<TFile>;
+	private readonly getSettingsRef: () => FiveYearJournalSettings;
 
-	constructor(private readonly app: App) {
+	constructor(app: App, getSettings: () => FiveYearJournalSettings) {
+		this.getSettingsRef = getSettings;
 		this.index = new JournalIndex<TFile>({
-			getMarkdownFiles: () => this.app.vault.getMarkdownFiles(),
-			isJournalFile: (file) => this.isJournalFile(file),
-			getCreatedDateParts: (file) => this.getCreatedDateParts(file),
-			readFile: (file) => this.app.vault.cachedRead(file),
+			getMarkdownFiles: () => app.vault.getMarkdownFiles(),
+			isJournalFile: (file) => this.isJournalFile(file, app),
+			getCreatedDateParts: (file) => this.getCreatedDateParts(file, app),
+			readFile: (file) => app.vault.cachedRead(file),
 			getFilePath: (file) => file.path,
 			getFileBasename: (file) => file.basename,
 		});
+	}
+
+	getSettings(): FiveYearJournalSettings {
+		return this.getSettingsRef();
 	}
 
 	invalidateCaches(): void {
 		this.index.invalidateCaches();
 	}
 
-	isJournalFile(file: TFile): boolean {
-		const cache = this.app.metadataCache.getFileCache(file);
+	isJournalFile(file: TFile, app: App): boolean {
+		const cache = app.metadataCache.getFileCache(file);
 		if (!cache) {
 			return false;
 		}
 
-		return this.getTags(cache).has("#journal");
+		const settings = this.getSettingsRef();
+		if (settings.filterField.trim().toLowerCase() === "tags") {
+			return filterMatches("tags", this.getTags(cache), settings.filterValues, settings.filterMatchMode);
+		}
+
+		return filterMatches(
+			settings.filterField,
+			cache.frontmatter?.[settings.filterField],
+			settings.filterValues,
+			settings.filterMatchMode,
+		);
 	}
 
-	getCreatedDateParts(file: TFile): DateParts | null {
-		const cache = this.app.metadataCache.getFileCache(file);
+	getCreatedDateParts(file: TFile, app: App): DateParts | null {
+		const cache = app.metadataCache.getFileCache(file);
 		if (!cache?.frontmatter) {
 			return null;
 		}
 
-		return this.parseCreated(cache.frontmatter.created);
+		const settings = this.getSettingsRef();
+		return this.parseCreated(cache.frontmatter[settings.dateField]);
 	}
 
 	getSectionEntries(activeDate: DateParts, targetYear: number): JournalEntry[] {
 		return this.index.getSectionEntries(activeDate, targetYear);
 	}
 
-	async getPreviewSnippet(file: TFile, maxLines = 4, maxChars = 420): Promise<string | null> {
-		return this.index.getPreviewSnippet(file, maxLines, maxChars);
+	async getPreviewSnippet(file: TFile): Promise<string | null> {
+		const settings = this.getSettingsRef();
+		return this.index.getPreviewSnippet(file, settings.previewMaxLines, settings.previewMaxChars);
 	}
 
-	private getTags(cache: CachedMetadata): Set<string> {
+	private getTags(cache: CachedMetadata): string[] {
 		const tags = new Set<string>();
 		const maybeTagCaches = [
 			...(cache.tags ?? []),
@@ -83,16 +110,16 @@ export class JournalQueryService {
 
 		const fmTags = cache.frontmatter?.tags;
 		if (typeof fmTags === "string") {
-			tags.add(normalizeTag(fmTags));
+			tags.add(fmTags);
 		} else if (Array.isArray(fmTags)) {
 			for (const tag of fmTags) {
 				if (typeof tag === "string") {
-					tags.add(normalizeTag(tag));
+					tags.add(tag);
 				}
 			}
 		}
 
-		return tags;
+		return [...tags];
 	}
 
 	private parseCreated(value: unknown): DateParts | null {
@@ -114,13 +141,13 @@ export class JournalQueryService {
 
 class FiveYearJournalView extends ItemView {
 	private renderId = 0;
+	private readonly appRef: App;
+	private readonly journalService: JournalQueryService;
 
-	constructor(
-		leaf: WorkspaceLeaf,
-		private readonly appRef: App,
-		private readonly journalService: JournalQueryService,
-	) {
+	constructor(leaf: WorkspaceLeaf, appRef: App, journalService: JournalQueryService) {
 		super(leaf);
+		this.appRef = appRef;
+		this.journalService = journalService;
 	}
 
 	getViewType(): string {
@@ -149,20 +176,22 @@ class FiveYearJournalView extends ItemView {
 			return;
 		}
 
-		if (!this.journalService.isJournalFile(activeFile)) {
+		if (!this.journalService.isJournalFile(activeFile, this.appRef)) {
 			return;
 		}
 
-		const activeDate = this.journalService.getCreatedDateParts(activeFile);
+		const activeDate = this.journalService.getCreatedDateParts(activeFile, this.appRef);
 		if (!activeDate) {
+			const settings = this.journalService.getSettings();
 			container.createEl("p", {
-				text: "This journal note has no valid 'created' date in frontmatter.",
+				text: `This note has no valid '${settings.dateField}' date in frontmatter.`,
 				cls: "five-year-journal__message",
 			});
 			return;
 		}
 
-		const sections = this.buildSections(activeDate.year);
+		const settings = this.journalService.getSettings();
+		const sections = this.buildSections(activeDate.year, settings);
 		for (const sectionDefinition of sections) {
 			if (this.renderId !== currentRenderId) {
 				return;
@@ -209,7 +238,6 @@ class FiveYearJournalView extends ItemView {
 				try {
 					return await this.journalService.getPreviewSnippet(file);
 				} catch {
-					// File could be deleted/renamed while rendering.
 					return null;
 				}
 			});
@@ -232,12 +260,12 @@ class FiveYearJournalView extends ItemView {
 		}
 	}
 
-	private buildSections(activeYear: number): JournalSection[] {
+	private buildSections(activeYear: number, settings: FiveYearJournalSettings): JournalSection[] {
 		const sections: JournalSection[] = [];
 		const usedYears = new Set<number>();
 		const currentYear = new Date().getFullYear();
 
-		if (currentYear !== activeYear) {
+		if (settings.showThisYearSection && currentYear !== activeYear) {
 			sections.push({
 				title: "This year",
 				targetYear: currentYear,
@@ -245,7 +273,7 @@ class FiveYearJournalView extends ItemView {
 			usedYears.add(currentYear);
 		}
 
-		for (let offset = 1; offset <= 4; offset += 1) {
+		for (let offset = 1; offset <= settings.yearsBack; offset += 1) {
 			const targetYear = currentYear - offset;
 			if (usedYears.has(targetYear)) {
 				continue;
@@ -262,12 +290,138 @@ class FiveYearJournalView extends ItemView {
 	}
 }
 
+class FiveYearJournalSettingTab extends PluginSettingTab {
+	private readonly plugin: FiveYearJournalPlugin;
+	private draft: FiveYearJournalSettings;
+
+	constructor(app: App, plugin: FiveYearJournalPlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
+		this.draft = { ...plugin.settings };
+	}
+
+	display(): void {
+		this.draft = { ...this.plugin.settings };
+		const { containerEl } = this;
+		containerEl.empty();
+
+		containerEl.createEl("h3", { text: "Filter" });
+		containerEl.createEl("p", { text: "Changes apply when you click Save settings." });
+
+		new Setting(containerEl)
+			.setName("Filter property")
+			.setDesc("Frontmatter property used for selecting notes, e.g. tags, type, noteType")
+			.addText((text) => {
+				text.setPlaceholder("tags").setValue(this.draft.filterField).onChange((value) => {
+					this.draft.filterField = value;
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("Filter values")
+			.setDesc("Comma-separated values, e.g. journal, daily")
+			.addText((text) => {
+				text.setPlaceholder("journal").setValue(this.draft.filterValues).onChange((value) => {
+					this.draft.filterValues = value;
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("Filter match mode")
+			.setDesc("Match any value or require all values")
+			.addDropdown((dropdown) => {
+				dropdown
+					.addOption("any", "Any")
+					.addOption("all", "All")
+					.setValue(this.draft.filterMatchMode)
+					.onChange((value) => {
+						this.draft.filterMatchMode = value === "all" ? "all" : "any";
+					});
+			});
+
+		containerEl.createEl("h3", { text: "Dates and range" });
+
+		new Setting(containerEl)
+			.setName("Date property")
+			.setDesc("Frontmatter property containing note date")
+			.addText((text) => {
+				text.setPlaceholder("created").setValue(this.draft.dateField).onChange((value) => {
+					this.draft.dateField = value;
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("Years back")
+			.setDesc("How many historical year sections to show")
+			.addText((text) => {
+				text
+					.setPlaceholder("4")
+					.setValue(String(this.draft.yearsBack))
+					.onChange((value) => {
+						this.draft.yearsBack = Number(value);
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Show This year section")
+			.setDesc("Show current-year section when active note is from a different year")
+			.addToggle((toggle) => {
+				toggle.setValue(this.draft.showThisYearSection).onChange((value) => {
+					this.draft.showThisYearSection = value;
+				});
+			});
+
+		containerEl.createEl("h3", { text: "Preview" });
+
+		new Setting(containerEl)
+			.setName("Preview max lines")
+			.addText((text) => {
+				text
+					.setPlaceholder("4")
+					.setValue(String(this.draft.previewMaxLines))
+					.onChange((value) => {
+						this.draft.previewMaxLines = Number(value);
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Preview max characters")
+			.addText((text) => {
+				text
+					.setPlaceholder("420")
+					.setValue(String(this.draft.previewMaxChars))
+					.onChange((value) => {
+						this.draft.previewMaxChars = Number(value);
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Save settings")
+			.setDesc("Apply all changes and refresh the view")
+			.addButton((button) => {
+				button.setButtonText("Save settings").setCta().onClick(async () => {
+					await this.plugin.savePluginSettings(this.draft);
+					this.display();
+				});
+			})
+			.addButton((button) => {
+				button.setButtonText("Reset defaults").onClick(async () => {
+					await this.plugin.savePluginSettings(DEFAULT_SETTINGS);
+					this.display();
+				});
+			});
+	}
+}
+
 export default class FiveYearJournalPlugin extends Plugin {
+	settings: FiveYearJournalSettings = { ...DEFAULT_SETTINGS };
 	private journalService!: JournalQueryService;
 	private refreshTimer: number | null = null;
 
 	async onload(): Promise<void> {
-		this.journalService = new JournalQueryService(this.app);
+		await this.loadPluginSettings();
+		this.journalService = new JournalQueryService(this.app, () => this.settings);
+		this.addSettingTab(new FiveYearJournalSettingTab(this.app, this));
 
 		this.registerView(
 			VIEW_TYPE_FIVE_YEAR_JOURNAL,
@@ -301,6 +455,19 @@ export default class FiveYearJournalPlugin extends Plugin {
 		});
 	}
 
+	async savePluginSettings(nextSettings: FiveYearJournalSettings): Promise<void> {
+		const previous = this.settings;
+		const normalizedNext = normalizeSettings(nextSettings);
+		this.settings = normalizedNext;
+		await this.saveData(normalizedNext);
+
+		if (shouldRebuildIndex(previous, normalizedNext)) {
+			this.journalService.invalidateCaches();
+		}
+
+		await this.refreshView();
+	}
+
 	onunload(): void {
 		if (this.refreshTimer !== null) {
 			window.clearTimeout(this.refreshTimer);
@@ -308,6 +475,11 @@ export default class FiveYearJournalPlugin extends Plugin {
 		}
 
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_FIVE_YEAR_JOURNAL);
+	}
+
+	private async loadPluginSettings(): Promise<void> {
+		const loaded = await this.loadData();
+		this.settings = normalizeSettings(loaded);
 	}
 
 	private scheduleRefresh(): void {
@@ -343,9 +515,4 @@ export default class FiveYearJournalPlugin extends Plugin {
 			}
 		}
 	}
-}
-
-function normalizeTag(tag: string): string {
-	const trimmed = tag.trim();
-	return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
 }

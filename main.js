@@ -20,7 +20,6 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // main.ts
 var main_exports = {};
 __export(main_exports, {
-  JournalQueryService: () => JournalQueryService,
   default: () => FiveYearJournalPlugin
 });
 module.exports = __toCommonJS(main_exports);
@@ -195,42 +194,155 @@ async function mapWithConcurrency(items, concurrency, mapper) {
   return results;
 }
 
+// plugin-settings.ts
+var DEFAULT_SETTINGS = {
+  filterField: "tags",
+  filterValues: "journal",
+  filterMatchMode: "any",
+  dateField: "created",
+  yearsBack: 4,
+  showThisYearSection: true,
+  previewMaxLines: 4,
+  previewMaxChars: 420
+};
+function normalizeSettings(value) {
+  const source = isRecord(value) ? value : {};
+  const maybeMode = source.filterMatchMode;
+  const filterMatchMode = maybeMode === "all" ? "all" : "any";
+  return {
+    filterField: normalizeNonEmptyString(source.filterField, DEFAULT_SETTINGS.filterField),
+    filterValues: normalizeCsvText(source.filterValues, DEFAULT_SETTINGS.filterValues),
+    filterMatchMode,
+    dateField: normalizeNonEmptyString(source.dateField, DEFAULT_SETTINGS.dateField),
+    yearsBack: clampInt(source.yearsBack, 1, 20, DEFAULT_SETTINGS.yearsBack),
+    showThisYearSection: typeof source.showThisYearSection === "boolean" ? source.showThisYearSection : true,
+    previewMaxLines: clampInt(source.previewMaxLines, 1, 12, DEFAULT_SETTINGS.previewMaxLines),
+    previewMaxChars: clampInt(source.previewMaxChars, 80, 2e3, DEFAULT_SETTINGS.previewMaxChars)
+  };
+}
+function parseFilterValues(csv) {
+  return csv.split(",").map((token) => token.trim()).filter((token) => token.length > 0);
+}
+function normalizeFilterToken(field, token) {
+  const normalized = token.trim().toLowerCase();
+  if (field.trim().toLowerCase() === "tags") {
+    return normalized.startsWith("#") ? normalized : `#${normalized}`;
+  }
+  return normalized;
+}
+function extractComparableValues(field, value) {
+  const fieldName = field.trim().toLowerCase();
+  const values = Array.isArray(value) ? value : [value];
+  const normalized = [];
+  for (const item of values) {
+    const converted = toStringValue(item);
+    if (!converted) {
+      continue;
+    }
+    normalized.push(normalizeFilterToken(fieldName, converted));
+  }
+  return normalized;
+}
+function filterMatches(field, rawValue, filterValuesCsv, mode) {
+  const normalizedFilterValues = parseFilterValues(filterValuesCsv).map((value) => normalizeFilterToken(field, value));
+  if (normalizedFilterValues.length === 0) {
+    return false;
+  }
+  const candidates = extractComparableValues(field, rawValue);
+  if (candidates.length === 0) {
+    return false;
+  }
+  if (mode === "all") {
+    return normalizedFilterValues.every((filterValue) => candidates.includes(filterValue));
+  }
+  return normalizedFilterValues.some((filterValue) => candidates.includes(filterValue));
+}
+function shouldRebuildIndex(previous, next) {
+  return previous.filterField !== next.filterField || previous.filterValues !== next.filterValues || previous.filterMatchMode !== next.filterMatchMode || previous.dateField !== next.dateField;
+}
+function normalizeNonEmptyString(value, fallback) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+function normalizeCsvText(value, fallback) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.split(",").map((token) => token.trim()).filter((token) => token.length > 0).join(", ");
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+function clampInt(value, min, max, fallback) {
+  const asNumber = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(asNumber)) {
+    return fallback;
+  }
+  const rounded = Math.round(asNumber);
+  return Math.max(min, Math.min(max, rounded));
+}
+function toStringValue(value) {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const trimmed = String(value).trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null;
+}
+
 // main.ts
 var VIEW_TYPE_FIVE_YEAR_JOURNAL = "five-year-journal-view";
 var JournalQueryService = class {
-  constructor(app) {
-    this.app = app;
+  constructor(app, getSettings) {
+    this.getSettingsRef = getSettings;
     this.index = new JournalIndex({
-      getMarkdownFiles: () => this.app.vault.getMarkdownFiles(),
-      isJournalFile: (file) => this.isJournalFile(file),
-      getCreatedDateParts: (file) => this.getCreatedDateParts(file),
-      readFile: (file) => this.app.vault.cachedRead(file),
+      getMarkdownFiles: () => app.vault.getMarkdownFiles(),
+      isJournalFile: (file) => this.isJournalFile(file, app),
+      getCreatedDateParts: (file) => this.getCreatedDateParts(file, app),
+      readFile: (file) => app.vault.cachedRead(file),
       getFilePath: (file) => file.path,
       getFileBasename: (file) => file.basename
     });
   }
+  getSettings() {
+    return this.getSettingsRef();
+  }
   invalidateCaches() {
     this.index.invalidateCaches();
   }
-  isJournalFile(file) {
-    const cache = this.app.metadataCache.getFileCache(file);
+  isJournalFile(file, app) {
+    const cache = app.metadataCache.getFileCache(file);
     if (!cache) {
       return false;
     }
-    return this.getTags(cache).has("#journal");
+    const settings = this.getSettingsRef();
+    if (settings.filterField.trim().toLowerCase() === "tags") {
+      return filterMatches("tags", this.getTags(cache), settings.filterValues, settings.filterMatchMode);
+    }
+    return filterMatches(
+      settings.filterField,
+      cache.frontmatter?.[settings.filterField],
+      settings.filterValues,
+      settings.filterMatchMode
+    );
   }
-  getCreatedDateParts(file) {
-    const cache = this.app.metadataCache.getFileCache(file);
+  getCreatedDateParts(file, app) {
+    const cache = app.metadataCache.getFileCache(file);
     if (!cache?.frontmatter) {
       return null;
     }
-    return this.parseCreated(cache.frontmatter.created);
+    const settings = this.getSettingsRef();
+    return this.parseCreated(cache.frontmatter[settings.dateField]);
   }
   getSectionEntries(activeDate, targetYear) {
     return this.index.getSectionEntries(activeDate, targetYear);
   }
-  async getPreviewSnippet(file, maxLines = 4, maxChars = 420) {
-    return this.index.getPreviewSnippet(file, maxLines, maxChars);
+  async getPreviewSnippet(file) {
+    const settings = this.getSettingsRef();
+    return this.index.getPreviewSnippet(file, settings.previewMaxLines, settings.previewMaxChars);
   }
   getTags(cache) {
     const tags = /* @__PURE__ */ new Set();
@@ -245,15 +357,15 @@ var JournalQueryService = class {
     }
     const fmTags = cache.frontmatter?.tags;
     if (typeof fmTags === "string") {
-      tags.add(normalizeTag(fmTags));
+      tags.add(fmTags);
     } else if (Array.isArray(fmTags)) {
       for (const tag of fmTags) {
         if (typeof tag === "string") {
-          tags.add(normalizeTag(tag));
+          tags.add(tag);
         }
       }
     }
-    return tags;
+    return [...tags];
   }
   parseCreated(value) {
     if (typeof value === "string") {
@@ -272,9 +384,9 @@ var JournalQueryService = class {
 var FiveYearJournalView = class extends import_obsidian.ItemView {
   constructor(leaf, appRef, journalService) {
     super(leaf);
+    this.renderId = 0;
     this.appRef = appRef;
     this.journalService = journalService;
-    this.renderId = 0;
   }
   getViewType() {
     return VIEW_TYPE_FIVE_YEAR_JOURNAL;
@@ -296,18 +408,20 @@ var FiveYearJournalView = class extends import_obsidian.ItemView {
     if (!activeFile) {
       return;
     }
-    if (!this.journalService.isJournalFile(activeFile)) {
+    if (!this.journalService.isJournalFile(activeFile, this.appRef)) {
       return;
     }
-    const activeDate = this.journalService.getCreatedDateParts(activeFile);
+    const activeDate = this.journalService.getCreatedDateParts(activeFile, this.appRef);
     if (!activeDate) {
+      const settings2 = this.journalService.getSettings();
       container.createEl("p", {
-        text: "This journal note has no valid 'created' date in frontmatter.",
+        text: `This note has no valid '${settings2.dateField}' date in frontmatter.`,
         cls: "five-year-journal__message"
       });
       return;
     }
-    const sections = this.buildSections(activeDate.year);
+    const settings = this.journalService.getSettings();
+    const sections = this.buildSections(activeDate.year, settings);
     for (const sectionDefinition of sections) {
       if (this.renderId !== currentRenderId) {
         return;
@@ -365,18 +479,18 @@ var FiveYearJournalView = class extends import_obsidian.ItemView {
       }
     }
   }
-  buildSections(activeYear) {
+  buildSections(activeYear, settings) {
     const sections = [];
     const usedYears = /* @__PURE__ */ new Set();
     const currentYear = (/* @__PURE__ */ new Date()).getFullYear();
-    if (currentYear !== activeYear) {
+    if (settings.showThisYearSection && currentYear !== activeYear) {
       sections.push({
         title: "This year",
         targetYear: currentYear
       });
       usedYears.add(currentYear);
     }
-    for (let offset = 1; offset <= 4; offset += 1) {
+    for (let offset = 1; offset <= settings.yearsBack; offset += 1) {
       const targetYear = currentYear - offset;
       if (usedYears.has(targetYear)) {
         continue;
@@ -390,13 +504,83 @@ var FiveYearJournalView = class extends import_obsidian.ItemView {
     return sections;
   }
 };
+var FiveYearJournalSettingTab = class extends import_obsidian.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+    this.draft = { ...plugin.settings };
+  }
+  display() {
+    this.draft = { ...this.plugin.settings };
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h3", { text: "Filter" });
+    containerEl.createEl("p", { text: "Changes apply when you click Save settings." });
+    new import_obsidian.Setting(containerEl).setName("Filter property").setDesc("Frontmatter property used for selecting notes, e.g. tags, type, noteType").addText((text) => {
+      text.setPlaceholder("tags").setValue(this.draft.filterField).onChange((value) => {
+        this.draft.filterField = value;
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Filter values").setDesc("Comma-separated values, e.g. journal, daily").addText((text) => {
+      text.setPlaceholder("journal").setValue(this.draft.filterValues).onChange((value) => {
+        this.draft.filterValues = value;
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Filter match mode").setDesc("Match any value or require all values").addDropdown((dropdown) => {
+      dropdown.addOption("any", "Any").addOption("all", "All").setValue(this.draft.filterMatchMode).onChange((value) => {
+        this.draft.filterMatchMode = value === "all" ? "all" : "any";
+      });
+    });
+    containerEl.createEl("h3", { text: "Dates and range" });
+    new import_obsidian.Setting(containerEl).setName("Date property").setDesc("Frontmatter property containing note date").addText((text) => {
+      text.setPlaceholder("created").setValue(this.draft.dateField).onChange((value) => {
+        this.draft.dateField = value;
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Years back").setDesc("How many historical year sections to show").addText((text) => {
+      text.setPlaceholder("4").setValue(String(this.draft.yearsBack)).onChange((value) => {
+        this.draft.yearsBack = Number(value);
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Show This year section").setDesc("Show current-year section when active note is from a different year").addToggle((toggle) => {
+      toggle.setValue(this.draft.showThisYearSection).onChange((value) => {
+        this.draft.showThisYearSection = value;
+      });
+    });
+    containerEl.createEl("h3", { text: "Preview" });
+    new import_obsidian.Setting(containerEl).setName("Preview max lines").addText((text) => {
+      text.setPlaceholder("4").setValue(String(this.draft.previewMaxLines)).onChange((value) => {
+        this.draft.previewMaxLines = Number(value);
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Preview max characters").addText((text) => {
+      text.setPlaceholder("420").setValue(String(this.draft.previewMaxChars)).onChange((value) => {
+        this.draft.previewMaxChars = Number(value);
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Save settings").setDesc("Apply all changes and refresh the view").addButton((button) => {
+      button.setButtonText("Save settings").setCta().onClick(async () => {
+        await this.plugin.savePluginSettings(this.draft);
+        this.display();
+      });
+    }).addButton((button) => {
+      button.setButtonText("Reset defaults").onClick(async () => {
+        await this.plugin.savePluginSettings(DEFAULT_SETTINGS);
+        this.display();
+      });
+    });
+  }
+};
 var FiveYearJournalPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
+    this.settings = { ...DEFAULT_SETTINGS };
     this.refreshTimer = null;
   }
   async onload() {
-    this.journalService = new JournalQueryService(this.app);
+    await this.loadPluginSettings();
+    this.journalService = new JournalQueryService(this.app, () => this.settings);
+    this.addSettingTab(new FiveYearJournalSettingTab(this.app, this));
     this.registerView(
       VIEW_TYPE_FIVE_YEAR_JOURNAL,
       (leaf) => new FiveYearJournalView(leaf, this.app, this.journalService)
@@ -424,12 +608,26 @@ var FiveYearJournalPlugin = class extends import_obsidian.Plugin {
       void this.activateView();
     });
   }
+  async savePluginSettings(nextSettings) {
+    const previous = this.settings;
+    const normalizedNext = normalizeSettings(nextSettings);
+    this.settings = normalizedNext;
+    await this.saveData(normalizedNext);
+    if (shouldRebuildIndex(previous, normalizedNext)) {
+      this.journalService.invalidateCaches();
+    }
+    await this.refreshView();
+  }
   onunload() {
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
     }
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_FIVE_YEAR_JOURNAL);
+  }
+  async loadPluginSettings() {
+    const loaded = await this.loadData();
+    this.settings = normalizeSettings(loaded);
   }
   scheduleRefresh() {
     if (this.refreshTimer !== null) {
@@ -461,7 +659,3 @@ var FiveYearJournalPlugin = class extends import_obsidian.Plugin {
     }
   }
 };
-function normalizeTag(tag) {
-  const trimmed = tag.trim();
-  return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
-}

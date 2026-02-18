@@ -5,16 +5,10 @@
 ## What it does
 
 - Adds a custom right-sidebar view: **Five-Year Journal**.
-- Works for notes tagged with exact `#journal`.
-- Uses `created` from frontmatter as the journal date source.
+- Works with a configurable note filter based on any frontmatter property (including `tags`).
+- Uses configurable date property from frontmatter (default: `created`) as the journal date source.
 - Matches entries by **ISO week number** (not exact day), which increases useful results.
-- Shows sections for:
-  - `This year` (when the active note is from a different year)
-  - `1 year ago`
-  - `2 years ago`
-  - `3 years ago`
-  - `4 years ago`
-- Historical sections (`1-4 years ago`) are resolved relative to the current calendar year.
+- Shows `This year` (optional) and configurable number of past-year sections.
 - Shows all matching notes per section without collapsing.
 - Each result is clickable and opens the note.
 - Shows a richer multi-line preview snippet for each result.
@@ -24,23 +18,36 @@
 
 ## Rules and assumptions
 
-- Journal note = note tagged with exact `#journal`.
-- Date source = `created` frontmatter field.
-- Accepted `created` formats:
+- Matching note = note where configured `filterField` matches configured `filterValues`.
+- Date source = configured `dateField` frontmatter field.
+- Accepted date formats in `dateField`:
   - `YYYY-MM-DD`
   - ISO datetime strings (e.g. `YYYY-MM-DDTHH:mm:ssZ`)
-- If `created` is missing or invalid, the note is ignored in historical results.
-- If the active note is `#journal` but has no valid `created`, the view shows:
-  - `This journal note has no valid 'created' date in frontmatter.`
-- If active note is not `#journal`, the panel stays empty.
+- If `dateField` is missing or invalid, the note is ignored in historical results.
+- If active note does not match the configured filter, the panel stays empty.
+
+## Configuration
+
+Settings are available in Obsidian plugin settings:
+
+- `Filter property` (`filterField`): any frontmatter field, e.g. `tags`, `type`, `noteType`.
+- `Filter values` (`filterValues`): comma-separated values, e.g. `journal, daily`.
+- `Filter match mode` (`filterMatchMode`): `any` or `all`.
+- `Date property` (`dateField`): frontmatter date field (default: `created`).
+- `Years back` (`yearsBack`): number of historical sections (default: `4`).
+- `Show This year section` (`showThisYearSection`): on/off.
+- `Preview max lines` and `Preview max characters`.
+
+Changes in settings are applied when you click `Save settings`.
 
 ## Example frontmatter
 
 ```yaml
 ---
 created: 2026-01-09
+type: daily
 tags:
-  - journal
+  - reflection
 ---
 ```
 
@@ -88,6 +95,7 @@ When adding/changing features, update:
 
 ### Change notes
 
+- `0.1.3`: Added configurable filter by any property, configurable date field/range/preview limits, and save-based settings flow.
 - `0.1.2`: Performance refactor with indexed journal lookup, cached previews, and concurrent preview loading.
 - `0.1.1`: Fixed historical year section targeting to be relative to current year and removed show-more collapsing.
 - `0.1.0`: Initial public version with week-based matching, current-year context section, and richer previews.
