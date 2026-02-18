@@ -37,6 +37,7 @@ Settings are available in Obsidian plugin settings:
 - `Years back` (`yearsBack`): number of historical sections (default: `4`).
 - `Show This year section` (`showThisYearSection`): on/off.
 - `Preview max lines` and `Preview max characters`.
+- `Preview max bytes`: skips preview extraction for files above configured size limit.
 
 Changes in settings are applied when you click `Save settings`.
 
@@ -84,6 +85,11 @@ The view re-renders on:
 
 On vault/metadata updates, the plugin invalidates internal index/preview caches before the next render.
 
+## Safety notes
+
+- Preview extraction is skipped for files larger than configured `Preview max bytes`.
+- Preview read failures are handled gracefully and logged to the developer console.
+
 ## Keep this README up to date
 
 When adding/changing features, update:
@@ -95,6 +101,7 @@ When adding/changing features, update:
 
 ### Change notes
 
+- `0.1.5`: Added preview size guard (`previewMaxBytes`) and diagnostic logging for preview read failures.
 - `0.1.4`: Added property picker from discovered vault frontmatter fields and value suggestions to reduce filter typos.
 - `0.1.3`: Added configurable filter by any property, configurable date field/range/preview limits, and save-based settings flow.
 - `0.1.2`: Performance refactor with indexed journal lookup, cached previews, and concurrent preview loading.

@@ -52,6 +52,7 @@ Matching notes are selected by configurable frontmatter filters and date field.
 - Non-index settings (e.g. preview limits, years back) do not trigger index rebuild.
 - Filter matching supports primitive frontmatter values and arrays.
 - `tags` is treated as a special field with hash normalization.
+- Preview extraction is guarded by `previewMaxBytes`; oversized files return no preview.
 
 ## Common Change Playbooks
 - Add new filter behavior:
@@ -80,4 +81,3 @@ When behavior or settings change:
    - `manifest.json`
    - `package.json`
    - `versions.json`
-

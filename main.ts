@@ -38,15 +38,16 @@ class JournalQueryService {
 
 	constructor(app: App, getSettings: () => FiveYearJournalSettings) {
 		this.getSettingsRef = getSettings;
-		this.index = new JournalIndex<TFile>({
-			getMarkdownFiles: () => app.vault.getMarkdownFiles(),
-			isJournalFile: (file) => this.isJournalFile(file, app),
-			getCreatedDateParts: (file) => this.getCreatedDateParts(file, app),
-			readFile: (file) => app.vault.cachedRead(file),
-			getFilePath: (file) => file.path,
-			getFileBasename: (file) => file.basename,
-		});
-	}
+			this.index = new JournalIndex<TFile>({
+				getMarkdownFiles: () => app.vault.getMarkdownFiles(),
+				isJournalFile: (file) => this.isJournalFile(file, app),
+				getCreatedDateParts: (file) => this.getCreatedDateParts(file, app),
+				readFile: (file) => app.vault.cachedRead(file),
+				getFileSizeBytes: (file) => file.stat?.size ?? null,
+				getFilePath: (file) => file.path,
+				getFileBasename: (file) => file.basename,
+			});
+		}
 
 	getSettings(): FiveYearJournalSettings {
 		return this.getSettingsRef();
@@ -91,7 +92,7 @@ class JournalQueryService {
 
 	async getPreviewSnippet(file: TFile): Promise<string | null> {
 		const settings = this.getSettingsRef();
-		return this.index.getPreviewSnippet(file, settings.previewMaxLines, settings.previewMaxChars);
+		return this.index.getPreviewSnippet(file, settings.previewMaxLines, settings.previewMaxChars, settings.previewMaxBytes);
 	}
 
 	private getTags(cache: CachedMetadata): string[] {
@@ -237,7 +238,8 @@ class FiveYearJournalView extends ItemView {
 			const previews = await mapWithConcurrency(rows, 6, async ({ file }) => {
 				try {
 					return await this.journalService.getPreviewSnippet(file);
-				} catch {
+				} catch (error) {
+					logPreviewReadError(file.path, error);
 					return null;
 				}
 			});
@@ -431,6 +433,18 @@ class FiveYearJournalSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
+			.setName("Preview max bytes")
+			.setDesc("Skip preview extraction for files larger than this size in bytes")
+			.addText((text) => {
+				text
+					.setPlaceholder("262144")
+					.setValue(String(this.draft.previewMaxBytes))
+					.onChange((value) => {
+						this.draft.previewMaxBytes = Number(value);
+					});
+			});
+
+		new Setting(containerEl)
 			.setName("Save settings")
 			.setDesc("Apply all changes and refresh the view")
 			.addButton((button) => {
@@ -566,6 +580,10 @@ function normalizeFrontmatterPrimitive(value: unknown): string | null {
 	}
 
 	return null;
+}
+
+function logPreviewReadError(filePath: string, error: unknown): void {
+	console.debug("[five-year-journal] Failed to build preview for:", filePath, error);
 }
 
 export default class FiveYearJournalPlugin extends Plugin {

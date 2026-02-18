@@ -18,6 +18,7 @@ test("normalizeSettings applies defaults and clamps invalid values", () => {
 		showThisYearSection: false,
 		previewMaxLines: 0,
 		previewMaxChars: 10,
+		previewMaxBytes: 10,
 	});
 
 	assert.equal(normalized.filterField, "type");
@@ -28,6 +29,7 @@ test("normalizeSettings applies defaults and clamps invalid values", () => {
 	assert.equal(normalized.showThisYearSection, false);
 	assert.equal(normalized.previewMaxLines, 1);
 	assert.equal(normalized.previewMaxChars, 80);
+	assert.equal(normalized.previewMaxBytes, 4096);
 });
 
 test("filterMatches supports tags with and without hash", () => {
@@ -54,6 +56,7 @@ test("shouldRebuildIndex triggers only for index-relevant setting changes", () =
 	const base = normalizeSettings(DEFAULT_SETTINGS);
 	assert.equal(shouldRebuildIndex(base, { ...base, previewMaxLines: 8 }), false);
 	assert.equal(shouldRebuildIndex(base, { ...base, yearsBack: 8 }), false);
+	assert.equal(shouldRebuildIndex(base, { ...base, previewMaxBytes: 1024 }), false);
 	assert.equal(shouldRebuildIndex(base, { ...base, filterField: "type" }), true);
 	assert.equal(shouldRebuildIndex(base, { ...base, filterValues: "daily" }), true);
 	assert.equal(shouldRebuildIndex(base, { ...base, filterMatchMode: "all" }), true);

@@ -9,6 +9,7 @@ export type FiveYearJournalSettings = {
 	showThisYearSection: boolean;
 	previewMaxLines: number;
 	previewMaxChars: number;
+	previewMaxBytes: number;
 };
 
 export const DEFAULT_SETTINGS: FiveYearJournalSettings = {
@@ -20,6 +21,7 @@ export const DEFAULT_SETTINGS: FiveYearJournalSettings = {
 	showThisYearSection: true,
 	previewMaxLines: 4,
 	previewMaxChars: 420,
+	previewMaxBytes: 262144,
 };
 
 export function normalizeSettings(value: unknown): FiveYearJournalSettings {
@@ -36,6 +38,7 @@ export function normalizeSettings(value: unknown): FiveYearJournalSettings {
 		showThisYearSection: typeof source.showThisYearSection === "boolean" ? source.showThisYearSection : true,
 		previewMaxLines: clampInt(source.previewMaxLines, 1, 12, DEFAULT_SETTINGS.previewMaxLines),
 		previewMaxChars: clampInt(source.previewMaxChars, 80, 2000, DEFAULT_SETTINGS.previewMaxChars),
+		previewMaxBytes: clampInt(source.previewMaxBytes, 4096, 10485760, DEFAULT_SETTINGS.previewMaxBytes),
 	};
 }
 

@@ -70,6 +70,11 @@ function createFixture() {
 		["journal-non-match.md", `---\ncreated: ${formatDate(nonMatchingDate)}\n---\nIgnored`],
 		["not-journal.md", "Ignored"],
 	]);
+	const sizes = new Map<string, number>([
+		["journal-match.md", 64],
+		["journal-non-match.md", 64],
+		["not-journal.md", 64],
+	]);
 
 	const index = new JournalIndex<MockFile>({
 		getMarkdownFiles: () => {
@@ -78,19 +83,21 @@ function createFixture() {
 		},
 		isJournalFile: (file) => metadata.get(file.path)?.isJournal ?? false,
 		getCreatedDateParts: (file) => metadata.get(file.path)?.created ?? null,
-		readFile: async (file) => {
-			readCalls += 1;
-			return contents.get(file.path) ?? "";
-		},
-		getFilePath: (file) => file.path,
-		getFileBasename: (file) => file.basename,
-	});
+			readFile: async (file) => {
+				readCalls += 1;
+				return contents.get(file.path) ?? "";
+			},
+			getFileSizeBytes: (file) => sizes.get(file.path) ?? null,
+			getFilePath: (file) => file.path,
+			getFileBasename: (file) => file.basename,
+		});
 
 	return {
 		activeDate,
 		files,
 		getListCalls: () => listCalls,
 		getReadCalls: () => readCalls,
+		setFileSize: (filePath: string, size: number) => sizes.set(filePath, size),
 		index,
 	};
 }
@@ -140,6 +147,16 @@ test("JournalIndex caches preview reads", async () => {
 	assert.equal(first, "First line\nSecond line");
 	assert.equal(second, first);
 	assert.equal(getReadCalls(), 1);
+});
+
+test("JournalIndex skips preview read when file is above size limit", async () => {
+	const fixture = createFixture();
+	const { files, getReadCalls, index, setFileSize } = fixture;
+	setFileSize(files[0].path, 5000);
+
+	const preview = await index.getPreviewSnippet(files[0], 4, 420, 1024);
+	assert.equal(preview, null);
+	assert.equal(getReadCalls(), 0);
 });
 
 test("mapWithConcurrency keeps output order", async () => {

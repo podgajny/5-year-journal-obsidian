@@ -14,6 +14,7 @@ type CoreDeps<TFile> = {
 	isJournalFile: (file: TFile) => boolean;
 	getCreatedDateParts: (file: TFile) => DateParts | null;
 	readFile: (file: TFile) => Promise<string>;
+	getFileSizeBytes: (file: TFile) => number | null;
 	getFilePath: (file: TFile) => string;
 	getFileBasename: (file: TFile) => string;
 };
@@ -45,10 +46,16 @@ export class JournalIndex<TFile> {
 		return [...(yearMap.get(activeWeek) ?? [])];
 	}
 
-	async getPreviewSnippet(file: TFile, maxLines = 4, maxChars = 420): Promise<string | null> {
-		const cacheKey = `${this.deps.getFilePath(file)}:${maxLines}:${maxChars}`;
+	async getPreviewSnippet(file: TFile, maxLines = 4, maxChars = 420, maxBytes = 262144): Promise<string | null> {
+		const cacheKey = `${this.deps.getFilePath(file)}:${maxLines}:${maxChars}:${maxBytes}`;
 		if (this.previewCache.has(cacheKey)) {
 			return this.previewCache.get(cacheKey) ?? null;
+		}
+
+		const fileSizeBytes = this.deps.getFileSizeBytes(file);
+		if (fileSizeBytes !== null && fileSizeBytes > maxBytes) {
+			this.previewCache.set(cacheKey, null);
+			return null;
 		}
 
 		const content = await this.deps.readFile(file);

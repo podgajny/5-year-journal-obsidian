@@ -47,10 +47,15 @@ var JournalIndex = class {
     }
     return [...yearMap.get(activeWeek) ?? []];
   }
-  async getPreviewSnippet(file, maxLines = 4, maxChars = 420) {
-    const cacheKey = `${this.deps.getFilePath(file)}:${maxLines}:${maxChars}`;
+  async getPreviewSnippet(file, maxLines = 4, maxChars = 420, maxBytes = 262144) {
+    const cacheKey = `${this.deps.getFilePath(file)}:${maxLines}:${maxChars}:${maxBytes}`;
     if (this.previewCache.has(cacheKey)) {
       return this.previewCache.get(cacheKey) ?? null;
+    }
+    const fileSizeBytes = this.deps.getFileSizeBytes(file);
+    if (fileSizeBytes !== null && fileSizeBytes > maxBytes) {
+      this.previewCache.set(cacheKey, null);
+      return null;
     }
     const content = await this.deps.readFile(file);
     const withoutFrontmatter = stripFrontmatter(content);
@@ -203,7 +208,8 @@ var DEFAULT_SETTINGS = {
   yearsBack: 4,
   showThisYearSection: true,
   previewMaxLines: 4,
-  previewMaxChars: 420
+  previewMaxChars: 420,
+  previewMaxBytes: 262144
 };
 function normalizeSettings(value) {
   const source = isRecord(value) ? value : {};
@@ -217,7 +223,8 @@ function normalizeSettings(value) {
     yearsBack: clampInt(source.yearsBack, 1, 20, DEFAULT_SETTINGS.yearsBack),
     showThisYearSection: typeof source.showThisYearSection === "boolean" ? source.showThisYearSection : true,
     previewMaxLines: clampInt(source.previewMaxLines, 1, 12, DEFAULT_SETTINGS.previewMaxLines),
-    previewMaxChars: clampInt(source.previewMaxChars, 80, 2e3, DEFAULT_SETTINGS.previewMaxChars)
+    previewMaxChars: clampInt(source.previewMaxChars, 80, 2e3, DEFAULT_SETTINGS.previewMaxChars),
+    previewMaxBytes: clampInt(source.previewMaxBytes, 4096, 10485760, DEFAULT_SETTINGS.previewMaxBytes)
   };
 }
 function parseFilterValues(csv) {
@@ -303,6 +310,7 @@ var JournalQueryService = class {
       isJournalFile: (file) => this.isJournalFile(file, app),
       getCreatedDateParts: (file) => this.getCreatedDateParts(file, app),
       readFile: (file) => app.vault.cachedRead(file),
+      getFileSizeBytes: (file) => file.stat?.size ?? null,
       getFilePath: (file) => file.path,
       getFileBasename: (file) => file.basename
     });
@@ -342,7 +350,7 @@ var JournalQueryService = class {
   }
   async getPreviewSnippet(file) {
     const settings = this.getSettingsRef();
-    return this.index.getPreviewSnippet(file, settings.previewMaxLines, settings.previewMaxChars);
+    return this.index.getPreviewSnippet(file, settings.previewMaxLines, settings.previewMaxChars, settings.previewMaxBytes);
   }
   getTags(cache) {
     const tags = /* @__PURE__ */ new Set();
@@ -460,7 +468,8 @@ var FiveYearJournalView = class extends import_obsidian.ItemView {
       const previews = await mapWithConcurrency(rows, 6, async ({ file }) => {
         try {
           return await this.journalService.getPreviewSnippet(file);
-        } catch {
+        } catch (error) {
+          logPreviewReadError(file.path, error);
           return null;
         }
       });
@@ -588,6 +597,11 @@ var FiveYearJournalSettingTab = class extends import_obsidian.PluginSettingTab {
         this.draft.previewMaxChars = Number(value);
       });
     });
+    new import_obsidian.Setting(containerEl).setName("Preview max bytes").setDesc("Skip preview extraction for files larger than this size in bytes").addText((text) => {
+      text.setPlaceholder("262144").setValue(String(this.draft.previewMaxBytes)).onChange((value) => {
+        this.draft.previewMaxBytes = Number(value);
+      });
+    });
     new import_obsidian.Setting(containerEl).setName("Save settings").setDesc("Apply all changes and refresh the view").addButton((button) => {
       button.setButtonText("Save settings").setCta().onClick(async () => {
         await this.plugin.savePluginSettings(this.draft);
@@ -699,6 +713,9 @@ function normalizeFrontmatterPrimitive(value) {
     return trimmed.length > 0 ? trimmed : null;
   }
   return null;
+}
+function logPreviewReadError(filePath, error) {
+  console.debug("[five-year-journal] Failed to build preview for:", filePath, error);
 }
 var FiveYearJournalPlugin = class extends import_obsidian.Plugin {
   constructor() {
