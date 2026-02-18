@@ -5,7 +5,8 @@
 	"main": "main.js",
 	"scripts": {
 		"build": "node esbuild.config.mjs --production",
-		"dev": "node esbuild.config.mjs"
+		"dev": "node esbuild.config.mjs",
+		"test": "npm run build && node --experimental-strip-types --test test/**/*.test.ts"
 	},
 	"keywords": [
 		"obsidian",

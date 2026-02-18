@@ -6,36 +6,39 @@ import {
 	TFile,
 	WorkspaceLeaf,
 } from "obsidian";
+import {
+	DateParts,
+	JournalEntry as CoreJournalEntry,
+	JournalIndex,
+	mapWithConcurrency,
+	parseIsoLikeDate,
+} from "./journal-core";
 
 const VIEW_TYPE_FIVE_YEAR_JOURNAL = "five-year-journal-view";
-
-type DateParts = {
-	year: number;
-	month: number;
-	day: number;
-};
-
-type JournalEntry = {
-	file: TFile;
-	dateParts: DateParts;
-};
 
 type JournalSection = {
 	title: string;
 	targetYear: number;
 };
 
-class JournalQueryService {
-	private isIndexDirty = true;
-	private readonly entriesByYearWeek = new Map<number, Map<number, JournalEntry[]>>();
-	private readonly previewCache = new Map<string, string | null>();
+type JournalEntry = CoreJournalEntry<TFile>;
 
-	constructor(private readonly app: App) {}
+export class JournalQueryService {
+	private readonly index: JournalIndex<TFile>;
+
+	constructor(private readonly app: App) {
+		this.index = new JournalIndex<TFile>({
+			getMarkdownFiles: () => this.app.vault.getMarkdownFiles(),
+			isJournalFile: (file) => this.isJournalFile(file),
+			getCreatedDateParts: (file) => this.getCreatedDateParts(file),
+			readFile: (file) => this.app.vault.cachedRead(file),
+			getFilePath: (file) => file.path,
+			getFileBasename: (file) => file.basename,
+		});
+	}
 
 	invalidateCaches(): void {
-		this.isIndexDirty = true;
-		this.entriesByYearWeek.clear();
-		this.previewCache.clear();
+		this.index.invalidateCaches();
 	}
 
 	isJournalFile(file: TFile): boolean {
@@ -57,96 +60,11 @@ class JournalQueryService {
 	}
 
 	getSectionEntries(activeDate: DateParts, targetYear: number): JournalEntry[] {
-		this.ensureIndex();
-		const activeWeek = getIsoWeekNumber(activeDate);
-		const yearMap = this.entriesByYearWeek.get(targetYear);
-		if (!yearMap) {
-			return [];
-		}
-
-		return [...(yearMap.get(activeWeek) ?? [])];
+		return this.index.getSectionEntries(activeDate, targetYear);
 	}
 
 	async getPreviewSnippet(file: TFile, maxLines = 4, maxChars = 420): Promise<string | null> {
-		const cacheKey = `${file.path}:${maxLines}:${maxChars}`;
-		if (this.previewCache.has(cacheKey)) {
-			return this.previewCache.get(cacheKey) ?? null;
-		}
-
-		const content = await this.app.vault.cachedRead(file);
-		const withoutFrontmatter = stripFrontmatter(content);
-		const previewLines: string[] = [];
-		let currentChars = 0;
-
-		for (const line of withoutFrontmatter.split("\n")) {
-			const compact = line.replace(/\s+/g, " ").trim();
-			if (compact.length === 0) {
-				continue;
-			}
-
-			const remaining = maxChars - currentChars;
-			if (remaining <= 0) {
-				break;
-			}
-
-			const truncatedLine =
-				compact.length > remaining ? `${compact.slice(0, Math.max(0, remaining - 1))}\u2026` : compact;
-			previewLines.push(truncatedLine);
-			currentChars += truncatedLine.length;
-
-			if (previewLines.length >= maxLines || truncatedLine.endsWith("\u2026")) {
-				break;
-			}
-		}
-
-		if (previewLines.length === 0) {
-			this.previewCache.set(cacheKey, null);
-			return null;
-		}
-
-		const preview = previewLines.join("\n");
-		this.previewCache.set(cacheKey, preview);
-		return preview;
-	}
-
-	private ensureIndex(): void {
-		if (!this.isIndexDirty) {
-			return;
-		}
-
-		this.entriesByYearWeek.clear();
-		for (const file of this.app.vault.getMarkdownFiles()) {
-			if (!this.isJournalFile(file)) {
-				continue;
-			}
-
-			const created = this.getCreatedDateParts(file);
-			if (!created) {
-				continue;
-			}
-
-			const week = getIsoWeekNumber(created);
-			const yearMap = getOrCreateMap(this.entriesByYearWeek, created.year);
-			const entries = getOrCreateArray(yearMap, week);
-			entries.push({ file, dateParts: created });
-		}
-
-		for (const yearMap of this.entriesByYearWeek.values()) {
-			for (const entries of yearMap.values()) {
-				entries.sort((a, b) => {
-					const aKey = a.dateParts.year * 10000 + a.dateParts.month * 100 + a.dateParts.day;
-					const bKey = b.dateParts.year * 10000 + b.dateParts.month * 100 + b.dateParts.day;
-
-					if (bKey !== aKey) {
-						return bKey - aKey;
-					}
-
-					return a.file.basename.localeCompare(b.file.basename);
-				});
-			}
-		}
-
-		this.isIndexDirty = false;
+		return this.index.getPreviewSnippet(file, maxLines, maxChars);
 	}
 
 	private getTags(cache: CachedMetadata): Set<string> {
@@ -430,119 +348,4 @@ export default class FiveYearJournalPlugin extends Plugin {
 function normalizeTag(tag: string): string {
 	const trimmed = tag.trim();
 	return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
-}
-
-function parseIsoLikeDate(value: string): DateParts | null {
-	const trimmed = value.trim();
-	const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})(?:[Tt ].*)?$/);
-	if (!match) {
-		return null;
-	}
-
-	const year = Number(match[1]);
-	const month = Number(match[2]);
-	const day = Number(match[3]);
-	if (
-		!Number.isInteger(year) ||
-		!Number.isInteger(month) ||
-		!Number.isInteger(day) ||
-		month < 1 ||
-		month > 12 ||
-		day < 1 ||
-		day > 31
-	) {
-		return null;
-	}
-
-	const check = new Date(Date.UTC(year, month - 1, day));
-	if (
-		check.getUTCFullYear() !== year ||
-		check.getUTCMonth() + 1 !== month ||
-		check.getUTCDate() !== day
-	) {
-		return null;
-	}
-
-	return { year, month, day };
-}
-
-function getIsoWeekNumber(dateParts: DateParts): number {
-	const date = new Date(Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day));
-	date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
-	const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-	const diffInDays = Math.floor((date.getTime() - yearStart.getTime()) / 86400000) + 1;
-	return Math.ceil(diffInDays / 7);
-}
-
-function stripFrontmatter(content: string): string {
-	if (!content.startsWith("---")) {
-		return content;
-	}
-
-	const lines = content.split("\n");
-	let endIndex = -1;
-	for (let i = 1; i < lines.length; i += 1) {
-		if (lines[i].trim() === "---") {
-			endIndex = i;
-			break;
-		}
-	}
-
-	if (endIndex === -1) {
-		return content;
-	}
-
-	return lines.slice(endIndex + 1).join("\n");
-}
-
-function getOrCreateMap<K, V>(map: Map<K, Map<number, V[]>>, key: K): Map<number, V[]> {
-	const existing = map.get(key);
-	if (existing) {
-		return existing;
-	}
-
-	const created = new Map<number, V[]>();
-	map.set(key, created);
-	return created;
-}
-
-function getOrCreateArray<K>(map: Map<K, JournalEntry[]>, key: K): JournalEntry[] {
-	const existing = map.get(key);
-	if (existing) {
-		return existing;
-	}
-
-	const created: JournalEntry[] = [];
-	map.set(key, created);
-	return created;
-}
-
-async function mapWithConcurrency<T, R>(
-	items: readonly T[],
-	concurrency: number,
-	mapper: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-	if (items.length === 0) {
-		return [];
-	}
-
-	const maxWorkers = Math.max(1, Math.min(concurrency, items.length));
-	const results: R[] = new Array(items.length);
-	let nextIndex = 0;
-
-	const workers = Array.from({ length: maxWorkers }, async () => {
-		while (true) {
-			const currentIndex = nextIndex;
-			nextIndex += 1;
-
-			if (currentIndex >= items.length) {
-				return;
-			}
-
-			results[currentIndex] = await mapper(items[currentIndex], currentIndex);
-		}
-	});
-
-	await Promise.all(workers);
-	return results;
 }
