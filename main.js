@@ -28,6 +28,14 @@ var VIEW_TYPE_FIVE_YEAR_JOURNAL = "five-year-journal-view";
 var JournalQueryService = class {
   constructor(app) {
     this.app = app;
+    this.isIndexDirty = true;
+    this.entriesByYearWeek = /* @__PURE__ */ new Map();
+    this.previewCache = /* @__PURE__ */ new Map();
+  }
+  invalidateCaches() {
+    this.isIndexDirty = true;
+    this.entriesByYearWeek.clear();
+    this.previewCache.clear();
   }
   isJournalFile(file) {
     const cache = this.app.metadataCache.getFileCache(file);
@@ -44,31 +52,19 @@ var JournalQueryService = class {
     return this.parseCreated(cache.frontmatter.created);
   }
   getSectionEntries(activeDate, targetYear) {
-    const results = [];
+    this.ensureIndex();
     const activeWeek = getIsoWeekNumber(activeDate);
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      if (!this.isJournalFile(file)) {
-        continue;
-      }
-      const created = this.getCreatedDateParts(file);
-      if (!created) {
-        continue;
-      }
-      if (created.year === targetYear && getIsoWeekNumber(created) === activeWeek) {
-        results.push({ file, dateParts: created });
-      }
+    const yearMap = this.entriesByYearWeek.get(targetYear);
+    if (!yearMap) {
+      return [];
     }
-    results.sort((a, b) => {
-      const aKey = a.dateParts.year * 1e4 + a.dateParts.month * 100 + a.dateParts.day;
-      const bKey = b.dateParts.year * 1e4 + b.dateParts.month * 100 + b.dateParts.day;
-      if (bKey !== aKey) {
-        return bKey - aKey;
-      }
-      return a.file.basename.localeCompare(b.file.basename);
-    });
-    return results;
+    return [...yearMap.get(activeWeek) ?? []];
   }
   async getPreviewSnippet(file, maxLines = 4, maxChars = 420) {
+    const cacheKey = `${file.path}:${maxLines}:${maxChars}`;
+    if (this.previewCache.has(cacheKey)) {
+      return this.previewCache.get(cacheKey) ?? null;
+    }
     const content = await this.app.vault.cachedRead(file);
     const withoutFrontmatter = stripFrontmatter(content);
     const previewLines = [];
@@ -90,9 +86,44 @@ var JournalQueryService = class {
       }
     }
     if (previewLines.length === 0) {
+      this.previewCache.set(cacheKey, null);
       return null;
     }
-    return previewLines.join("\n");
+    const preview = previewLines.join("\n");
+    this.previewCache.set(cacheKey, preview);
+    return preview;
+  }
+  ensureIndex() {
+    if (!this.isIndexDirty) {
+      return;
+    }
+    this.entriesByYearWeek.clear();
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (!this.isJournalFile(file)) {
+        continue;
+      }
+      const created = this.getCreatedDateParts(file);
+      if (!created) {
+        continue;
+      }
+      const week = getIsoWeekNumber(created);
+      const yearMap = getOrCreateMap(this.entriesByYearWeek, created.year);
+      const entries = getOrCreateArray(yearMap, week);
+      entries.push({ file, dateParts: created });
+    }
+    for (const yearMap of this.entriesByYearWeek.values()) {
+      for (const entries of yearMap.values()) {
+        entries.sort((a, b) => {
+          const aKey = a.dateParts.year * 1e4 + a.dateParts.month * 100 + a.dateParts.day;
+          const bKey = b.dateParts.year * 1e4 + b.dateParts.month * 100 + b.dateParts.day;
+          if (bKey !== aKey) {
+            return bKey - aKey;
+          }
+          return a.file.basename.localeCompare(b.file.basename);
+        });
+      }
+    }
+    this.isIndexDirty = false;
   }
   getTags(cache) {
     const tags = /* @__PURE__ */ new Set();
@@ -188,9 +219,9 @@ var FiveYearJournalView = class extends import_obsidian.ItemView {
         continue;
       }
       const listContainer = section.createDiv({ cls: "five-year-journal__list" });
-      for (const entry of entries) {
+      const renderedRows = entries.map((entry) => {
         if (this.renderId !== currentRenderId) {
-          return;
+          return null;
         }
         const row = listContainer.createDiv({ cls: "five-year-journal__item" });
         const link = row.createEl("a", {
@@ -202,16 +233,28 @@ var FiveYearJournalView = class extends import_obsidian.ItemView {
           event.preventDefault();
           this.appRef.workspace.getLeaf(true).openFile(entry.file);
         });
+        return { row, file: entry.file };
+      });
+      const rows = renderedRows.filter((item) => item !== null);
+      const previews = await mapWithConcurrency(rows, 6, async ({ file }) => {
         try {
-          const preview = await this.journalService.getPreviewSnippet(entry.file);
-          if (preview) {
-            row.createEl("div", {
-              text: preview,
-              cls: "five-year-journal__preview"
-            });
-          }
+          return await this.journalService.getPreviewSnippet(file);
         } catch {
+          return null;
         }
+      });
+      if (this.renderId !== currentRenderId) {
+        return;
+      }
+      for (let i = 0; i < rows.length; i += 1) {
+        const preview = previews[i];
+        if (!preview) {
+          continue;
+        }
+        rows[i].row.createEl("div", {
+          text: preview,
+          cls: "five-year-journal__preview"
+        });
       }
     }
   }
@@ -259,12 +302,14 @@ var FiveYearJournalPlugin = class extends import_obsidian.Plugin {
     for (const eventName of ["changed", "create", "delete", "rename"]) {
       this.registerEvent(
         this.app.vault.on(eventName, () => {
+          this.journalService.invalidateCaches();
           this.scheduleRefresh();
         })
       );
     }
     this.registerEvent(
       this.app.metadataCache.on("changed", () => {
+        this.journalService.invalidateCaches();
         this.scheduleRefresh();
       })
     );
@@ -354,4 +399,42 @@ function stripFrontmatter(content) {
     return content;
   }
   return lines.slice(endIndex + 1).join("\n");
+}
+function getOrCreateMap(map, key) {
+  const existing = map.get(key);
+  if (existing) {
+    return existing;
+  }
+  const created = /* @__PURE__ */ new Map();
+  map.set(key, created);
+  return created;
+}
+function getOrCreateArray(map, key) {
+  const existing = map.get(key);
+  if (existing) {
+    return existing;
+  }
+  const created = [];
+  map.set(key, created);
+  return created;
+}
+async function mapWithConcurrency(items, concurrency, mapper) {
+  if (items.length === 0) {
+    return [];
+  }
+  const maxWorkers = Math.max(1, Math.min(concurrency, items.length));
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: maxWorkers }, async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= items.length) {
+        return;
+      }
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }

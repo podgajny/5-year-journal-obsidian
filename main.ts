@@ -26,7 +26,17 @@ type JournalSection = {
 };
 
 class JournalQueryService {
+	private isIndexDirty = true;
+	private readonly entriesByYearWeek = new Map<number, Map<number, JournalEntry[]>>();
+	private readonly previewCache = new Map<string, string | null>();
+
 	constructor(private readonly app: App) {}
+
+	invalidateCaches(): void {
+		this.isIndexDirty = true;
+		this.entriesByYearWeek.clear();
+		this.previewCache.clear();
+	}
 
 	isJournalFile(file: TFile): boolean {
 		const cache = this.app.metadataCache.getFileCache(file);
@@ -47,39 +57,22 @@ class JournalQueryService {
 	}
 
 	getSectionEntries(activeDate: DateParts, targetYear: number): JournalEntry[] {
-		const results: JournalEntry[] = [];
+		this.ensureIndex();
 		const activeWeek = getIsoWeekNumber(activeDate);
-
-		for (const file of this.app.vault.getMarkdownFiles()) {
-			if (!this.isJournalFile(file)) {
-				continue;
-			}
-
-			const created = this.getCreatedDateParts(file);
-			if (!created) {
-				continue;
-			}
-
-			if (created.year === targetYear && getIsoWeekNumber(created) === activeWeek) {
-				results.push({ file, dateParts: created });
-			}
+		const yearMap = this.entriesByYearWeek.get(targetYear);
+		if (!yearMap) {
+			return [];
 		}
 
-		results.sort((a, b) => {
-			const aKey = a.dateParts.year * 10000 + a.dateParts.month * 100 + a.dateParts.day;
-			const bKey = b.dateParts.year * 10000 + b.dateParts.month * 100 + b.dateParts.day;
-
-			if (bKey !== aKey) {
-				return bKey - aKey;
-			}
-
-			return a.file.basename.localeCompare(b.file.basename);
-		});
-
-		return results;
+		return [...(yearMap.get(activeWeek) ?? [])];
 	}
 
 	async getPreviewSnippet(file: TFile, maxLines = 4, maxChars = 420): Promise<string | null> {
+		const cacheKey = `${file.path}:${maxLines}:${maxChars}`;
+		if (this.previewCache.has(cacheKey)) {
+			return this.previewCache.get(cacheKey) ?? null;
+		}
+
 		const content = await this.app.vault.cachedRead(file);
 		const withoutFrontmatter = stripFrontmatter(content);
 		const previewLines: string[] = [];
@@ -107,10 +100,53 @@ class JournalQueryService {
 		}
 
 		if (previewLines.length === 0) {
+			this.previewCache.set(cacheKey, null);
 			return null;
 		}
 
-		return previewLines.join("\n");
+		const preview = previewLines.join("\n");
+		this.previewCache.set(cacheKey, preview);
+		return preview;
+	}
+
+	private ensureIndex(): void {
+		if (!this.isIndexDirty) {
+			return;
+		}
+
+		this.entriesByYearWeek.clear();
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			if (!this.isJournalFile(file)) {
+				continue;
+			}
+
+			const created = this.getCreatedDateParts(file);
+			if (!created) {
+				continue;
+			}
+
+			const week = getIsoWeekNumber(created);
+			const yearMap = getOrCreateMap(this.entriesByYearWeek, created.year);
+			const entries = getOrCreateArray(yearMap, week);
+			entries.push({ file, dateParts: created });
+		}
+
+		for (const yearMap of this.entriesByYearWeek.values()) {
+			for (const entries of yearMap.values()) {
+				entries.sort((a, b) => {
+					const aKey = a.dateParts.year * 10000 + a.dateParts.month * 100 + a.dateParts.day;
+					const bKey = b.dateParts.year * 10000 + b.dateParts.month * 100 + b.dateParts.day;
+
+					if (bKey !== aKey) {
+						return bKey - aKey;
+					}
+
+					return a.file.basename.localeCompare(b.file.basename);
+				});
+			}
+		}
+
+		this.isIndexDirty = false;
 	}
 
 	private getTags(cache: CachedMetadata): Set<string> {
@@ -230,9 +266,9 @@ class FiveYearJournalView extends ItemView {
 			}
 
 			const listContainer = section.createDiv({ cls: "five-year-journal__list" });
-			for (const entry of entries) {
+			const renderedRows = entries.map((entry) => {
 				if (this.renderId !== currentRenderId) {
-					return;
+					return null;
 				}
 
 				const row = listContainer.createDiv({ cls: "five-year-journal__item" });
@@ -247,17 +283,33 @@ class FiveYearJournalView extends ItemView {
 					this.appRef.workspace.getLeaf(true).openFile(entry.file);
 				});
 
+				return { row, file: entry.file };
+			});
+
+			const rows = renderedRows.filter((item): item is { row: HTMLDivElement; file: TFile } => item !== null);
+			const previews = await mapWithConcurrency(rows, 6, async ({ file }) => {
 				try {
-					const preview = await this.journalService.getPreviewSnippet(entry.file);
-					if (preview) {
-						row.createEl("div", {
-							text: preview,
-							cls: "five-year-journal__preview",
-						});
-					}
+					return await this.journalService.getPreviewSnippet(file);
 				} catch {
 					// File could be deleted/renamed while rendering.
+					return null;
 				}
+			});
+
+			if (this.renderId !== currentRenderId) {
+				return;
+			}
+
+			for (let i = 0; i < rows.length; i += 1) {
+				const preview = previews[i];
+				if (!preview) {
+					continue;
+				}
+
+				rows[i].row.createEl("div", {
+					text: preview,
+					cls: "five-year-journal__preview",
+				});
 			}
 		}
 	}
@@ -313,6 +365,7 @@ export default class FiveYearJournalPlugin extends Plugin {
 		for (const eventName of ["changed", "create", "delete", "rename"] as const) {
 			this.registerEvent(
 				this.app.vault.on(eventName, () => {
+					this.journalService.invalidateCaches();
 					this.scheduleRefresh();
 				}),
 			);
@@ -320,6 +373,7 @@ export default class FiveYearJournalPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.metadataCache.on("changed", () => {
+				this.journalService.invalidateCaches();
 				this.scheduleRefresh();
 			}),
 		);
@@ -439,4 +493,56 @@ function stripFrontmatter(content: string): string {
 	}
 
 	return lines.slice(endIndex + 1).join("\n");
+}
+
+function getOrCreateMap<K, V>(map: Map<K, Map<number, V[]>>, key: K): Map<number, V[]> {
+	const existing = map.get(key);
+	if (existing) {
+		return existing;
+	}
+
+	const created = new Map<number, V[]>();
+	map.set(key, created);
+	return created;
+}
+
+function getOrCreateArray<K>(map: Map<K, JournalEntry[]>, key: K): JournalEntry[] {
+	const existing = map.get(key);
+	if (existing) {
+		return existing;
+	}
+
+	const created: JournalEntry[] = [];
+	map.set(key, created);
+	return created;
+}
+
+async function mapWithConcurrency<T, R>(
+	items: readonly T[],
+	concurrency: number,
+	mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+	if (items.length === 0) {
+		return [];
+	}
+
+	const maxWorkers = Math.max(1, Math.min(concurrency, items.length));
+	const results: R[] = new Array(items.length);
+	let nextIndex = 0;
+
+	const workers = Array.from({ length: maxWorkers }, async () => {
+		while (true) {
+			const currentIndex = nextIndex;
+			nextIndex += 1;
+
+			if (currentIndex >= items.length) {
+				return;
+			}
+
+			results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+		}
+	});
+
+	await Promise.all(workers);
+	return results;
 }
