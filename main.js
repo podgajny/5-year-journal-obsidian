@@ -507,21 +507,42 @@ var FiveYearJournalView = class extends import_obsidian.ItemView {
 var FiveYearJournalSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
+    this.propertyOptions = [];
+    this.valueOptionsByProperty = /* @__PURE__ */ new Map();
+    this.hasCatalog = false;
     this.plugin = plugin;
     this.draft = { ...plugin.settings };
   }
   display() {
     this.draft = { ...this.plugin.settings };
+    if (!this.hasCatalog) {
+      this.refreshPropertyCatalog();
+    }
+    this.renderForm();
+  }
+  renderForm() {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h3", { text: "Filter" });
     containerEl.createEl("p", { text: "Changes apply when you click Save settings." });
-    new import_obsidian.Setting(containerEl).setName("Filter property").setDesc("Frontmatter property used for selecting notes, e.g. tags, type, noteType").addText((text) => {
-      text.setPlaceholder("tags").setValue(this.draft.filterField).onChange((value) => {
+    new import_obsidian.Setting(containerEl).setName("Filter property").setDesc("Choose from existing frontmatter properties found in your vault").addDropdown((dropdown) => {
+      for (const property of this.getPropertyOptionsWithCurrent(this.draft.filterField)) {
+        dropdown.addOption(property, property);
+      }
+      dropdown.setValue(this.draft.filterField).onChange((value) => {
         this.draft.filterField = value;
+        this.renderForm();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Filter values").setDesc("Comma-separated values, e.g. journal, daily").addText((text) => {
+    new import_obsidian.Setting(containerEl).setName("Filter values").setDesc("Comma-separated values, with suggestions from existing notes").addText((text) => {
+      const suggestionId = `five-year-journal-values-${this.draft.filterField || "default"}`;
+      text.inputEl.setAttr("list", suggestionId);
+      const suggestions = this.getValueSuggestions(this.draft.filterField);
+      const datalistEl = containerEl.createEl("datalist");
+      datalistEl.id = suggestionId;
+      for (const suggestion of suggestions) {
+        datalistEl.createEl("option", { value: suggestion });
+      }
       text.setPlaceholder("journal").setValue(this.draft.filterValues).onChange((value) => {
         this.draft.filterValues = value;
       });
@@ -532,9 +553,18 @@ var FiveYearJournalSettingTab = class extends import_obsidian.PluginSettingTab {
       });
     });
     containerEl.createEl("h3", { text: "Dates and range" });
-    new import_obsidian.Setting(containerEl).setName("Date property").setDesc("Frontmatter property containing note date").addText((text) => {
-      text.setPlaceholder("created").setValue(this.draft.dateField).onChange((value) => {
+    new import_obsidian.Setting(containerEl).setName("Date property").setDesc("Choose from existing frontmatter properties found in your vault").addDropdown((dropdown) => {
+      for (const property of this.getPropertyOptionsWithCurrent(this.draft.dateField)) {
+        dropdown.addOption(property, property);
+      }
+      dropdown.setValue(this.draft.dateField).onChange((value) => {
         this.draft.dateField = value;
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Property catalog").setDesc("Refresh discovered properties and value suggestions").addButton((button) => {
+      button.setButtonText("Refresh properties").onClick(() => {
+        this.refreshPropertyCatalog();
+        this.renderForm();
       });
     });
     new import_obsidian.Setting(containerEl).setName("Years back").setDesc("How many historical year sections to show").addText((text) => {
@@ -570,7 +600,106 @@ var FiveYearJournalSettingTab = class extends import_obsidian.PluginSettingTab {
       });
     });
   }
+  refreshPropertyCatalog() {
+    const properties = /* @__PURE__ */ new Set(["tags"]);
+    const valueSets = /* @__PURE__ */ new Map();
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!cache) {
+        continue;
+      }
+      const tags = this.getTagValues(cache);
+      if (tags.length > 0) {
+        const tagValues = getOrCreateSet(valueSets, "tags");
+        for (const tag of tags) {
+          tagValues.add(tag);
+        }
+      }
+      const frontmatter = cache.frontmatter;
+      if (!frontmatter) {
+        continue;
+      }
+      for (const [key, value] of Object.entries(frontmatter)) {
+        properties.add(key);
+        const values = normalizeFrontmatterValue(value);
+        if (values.length === 0) {
+          continue;
+        }
+        const valueSet = getOrCreateSet(valueSets, key);
+        for (const item of values) {
+          valueSet.add(item);
+        }
+      }
+    }
+    this.propertyOptions = [...properties].sort((a, b) => a.localeCompare(b));
+    this.valueOptionsByProperty.clear();
+    for (const [key, values] of valueSets) {
+      this.valueOptionsByProperty.set(key, [...values].sort((a, b) => a.localeCompare(b)).slice(0, 200));
+    }
+    this.hasCatalog = true;
+  }
+  getPropertyOptionsWithCurrent(currentValue) {
+    const options = new Set(this.propertyOptions);
+    if (currentValue.trim().length > 0) {
+      options.add(currentValue);
+    }
+    const sorted = [...options].sort((a, b) => a.localeCompare(b));
+    if (sorted.length === 0) {
+      return ["tags"];
+    }
+    return sorted;
+  }
+  getValueSuggestions(propertyName) {
+    const byExactName = this.valueOptionsByProperty.get(propertyName);
+    if (byExactName) {
+      return byExactName;
+    }
+    return [];
+  }
+  getTagValues(cache) {
+    const tags = /* @__PURE__ */ new Set();
+    for (const tagObj of cache.tags ?? []) {
+      if (typeof tagObj?.tag === "string") {
+        tags.add(tagObj.tag);
+      }
+    }
+    const fmTags = cache.frontmatter?.tags;
+    for (const tag of normalizeFrontmatterValue(fmTags)) {
+      tags.add(tag.startsWith("#") ? tag : `#${tag}`);
+    }
+    return [...tags];
+  }
 };
+function getOrCreateSet(map, key) {
+  const existing = map.get(key);
+  if (existing) {
+    return existing;
+  }
+  const created = /* @__PURE__ */ new Set();
+  map.set(key, created);
+  return created;
+}
+function normalizeFrontmatterValue(value) {
+  if (Array.isArray(value)) {
+    const result = [];
+    for (const item of value) {
+      const normalized2 = normalizeFrontmatterPrimitive(item);
+      if (normalized2) {
+        result.push(normalized2);
+      }
+    }
+    return result;
+  }
+  const normalized = normalizeFrontmatterPrimitive(value);
+  return normalized ? [normalized] : [];
+}
+function normalizeFrontmatterPrimitive(value) {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const trimmed = String(value).trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+}
 var FiveYearJournalPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);

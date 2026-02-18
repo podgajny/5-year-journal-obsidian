@@ -293,6 +293,9 @@ class FiveYearJournalView extends ItemView {
 class FiveYearJournalSettingTab extends PluginSettingTab {
 	private readonly plugin: FiveYearJournalPlugin;
 	private draft: FiveYearJournalSettings;
+	private propertyOptions: string[] = [];
+	private valueOptionsByProperty = new Map<string, string[]>();
+	private hasCatalog = false;
 
 	constructor(app: App, plugin: FiveYearJournalPlugin) {
 		super(app, plugin);
@@ -302,6 +305,13 @@ class FiveYearJournalSettingTab extends PluginSettingTab {
 
 	display(): void {
 		this.draft = { ...this.plugin.settings };
+		if (!this.hasCatalog) {
+			this.refreshPropertyCatalog();
+		}
+		this.renderForm();
+	}
+
+	private renderForm(): void {
 		const { containerEl } = this;
 		containerEl.empty();
 
@@ -310,17 +320,31 @@ class FiveYearJournalSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Filter property")
-			.setDesc("Frontmatter property used for selecting notes, e.g. tags, type, noteType")
-			.addText((text) => {
-				text.setPlaceholder("tags").setValue(this.draft.filterField).onChange((value) => {
+			.setDesc("Choose from existing frontmatter properties found in your vault")
+			.addDropdown((dropdown) => {
+				for (const property of this.getPropertyOptionsWithCurrent(this.draft.filterField)) {
+					dropdown.addOption(property, property);
+				}
+
+				dropdown.setValue(this.draft.filterField).onChange((value) => {
 					this.draft.filterField = value;
+					this.renderForm();
 				});
 			});
 
 		new Setting(containerEl)
 			.setName("Filter values")
-			.setDesc("Comma-separated values, e.g. journal, daily")
+			.setDesc("Comma-separated values, with suggestions from existing notes")
 			.addText((text) => {
+				const suggestionId = `five-year-journal-values-${this.draft.filterField || "default"}`;
+				text.inputEl.setAttr("list", suggestionId);
+				const suggestions = this.getValueSuggestions(this.draft.filterField);
+				const datalistEl = containerEl.createEl("datalist");
+				datalistEl.id = suggestionId;
+				for (const suggestion of suggestions) {
+					datalistEl.createEl("option", { value: suggestion });
+				}
+
 				text.setPlaceholder("journal").setValue(this.draft.filterValues).onChange((value) => {
 					this.draft.filterValues = value;
 				});
@@ -343,12 +367,23 @@ class FiveYearJournalSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Date property")
-			.setDesc("Frontmatter property containing note date")
-			.addText((text) => {
-				text.setPlaceholder("created").setValue(this.draft.dateField).onChange((value) => {
+			.setDesc("Choose from existing frontmatter properties found in your vault")
+			.addDropdown((dropdown) => {
+				for (const property of this.getPropertyOptionsWithCurrent(this.draft.dateField)) {
+					dropdown.addOption(property, property);
+				}
+
+				dropdown.setValue(this.draft.dateField).onChange((value) => {
 					this.draft.dateField = value;
 				});
 			});
+
+		new Setting(containerEl).setName("Property catalog").setDesc("Refresh discovered properties and value suggestions").addButton((button) => {
+			button.setButtonText("Refresh properties").onClick(() => {
+				this.refreshPropertyCatalog();
+				this.renderForm();
+			});
+		});
 
 		new Setting(containerEl)
 			.setName("Years back")
@@ -399,18 +434,138 @@ class FiveYearJournalSettingTab extends PluginSettingTab {
 			.setName("Save settings")
 			.setDesc("Apply all changes and refresh the view")
 			.addButton((button) => {
-				button.setButtonText("Save settings").setCta().onClick(async () => {
-					await this.plugin.savePluginSettings(this.draft);
-					this.display();
-				});
+					button.setButtonText("Save settings").setCta().onClick(async () => {
+						await this.plugin.savePluginSettings(this.draft);
+						this.display();
+					});
 			})
 			.addButton((button) => {
-				button.setButtonText("Reset defaults").onClick(async () => {
-					await this.plugin.savePluginSettings(DEFAULT_SETTINGS);
-					this.display();
+					button.setButtonText("Reset defaults").onClick(async () => {
+						await this.plugin.savePluginSettings(DEFAULT_SETTINGS);
+						this.display();
+					});
 				});
-			});
 	}
+
+	private refreshPropertyCatalog(): void {
+		const properties = new Set<string>(["tags"]);
+		const valueSets = new Map<string, Set<string>>();
+
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const cache = this.app.metadataCache.getFileCache(file);
+			if (!cache) {
+				continue;
+			}
+
+			const tags = this.getTagValues(cache);
+			if (tags.length > 0) {
+				const tagValues = getOrCreateSet(valueSets, "tags");
+				for (const tag of tags) {
+					tagValues.add(tag);
+				}
+			}
+
+			const frontmatter = cache.frontmatter;
+			if (!frontmatter) {
+				continue;
+			}
+
+			for (const [key, value] of Object.entries(frontmatter)) {
+				properties.add(key);
+				const values = normalizeFrontmatterValue(value);
+				if (values.length === 0) {
+					continue;
+				}
+
+				const valueSet = getOrCreateSet(valueSets, key);
+				for (const item of values) {
+					valueSet.add(item);
+				}
+			}
+		}
+
+		this.propertyOptions = [...properties].sort((a, b) => a.localeCompare(b));
+		this.valueOptionsByProperty.clear();
+		for (const [key, values] of valueSets) {
+			this.valueOptionsByProperty.set(key, [...values].sort((a, b) => a.localeCompare(b)).slice(0, 200));
+		}
+		this.hasCatalog = true;
+	}
+
+	private getPropertyOptionsWithCurrent(currentValue: string): string[] {
+		const options = new Set(this.propertyOptions);
+		if (currentValue.trim().length > 0) {
+			options.add(currentValue);
+		}
+
+		const sorted = [...options].sort((a, b) => a.localeCompare(b));
+		if (sorted.length === 0) {
+			return ["tags"];
+		}
+
+		return sorted;
+	}
+
+	private getValueSuggestions(propertyName: string): string[] {
+		const byExactName = this.valueOptionsByProperty.get(propertyName);
+		if (byExactName) {
+			return byExactName;
+		}
+
+		return [];
+	}
+
+	private getTagValues(cache: CachedMetadata): string[] {
+		const tags = new Set<string>();
+		for (const tagObj of cache.tags ?? []) {
+			if (typeof tagObj?.tag === "string") {
+				tags.add(tagObj.tag);
+			}
+		}
+
+		const fmTags = cache.frontmatter?.tags;
+		for (const tag of normalizeFrontmatterValue(fmTags)) {
+			tags.add(tag.startsWith("#") ? tag : `#${tag}`);
+		}
+
+		return [...tags];
+	}
+}
+
+function getOrCreateSet<K>(map: Map<K, Set<string>>, key: K): Set<string> {
+	const existing = map.get(key);
+	if (existing) {
+		return existing;
+	}
+
+	const created = new Set<string>();
+	map.set(key, created);
+	return created;
+}
+
+function normalizeFrontmatterValue(value: unknown): string[] {
+	if (Array.isArray(value)) {
+		const result: string[] = [];
+		for (const item of value) {
+			const normalized = normalizeFrontmatterPrimitive(item);
+			if (normalized) {
+				result.push(normalized);
+			}
+		}
+		return result;
+	}
+
+	const normalized = normalizeFrontmatterPrimitive(value);
+	return normalized ? [normalized] : [];
+}
+
+function normalizeFrontmatterPrimitive(value: unknown): string | null {
+	if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+		const trimmed = String(value).trim();
+		return trimmed.length > 0 ? trimmed : null;
+	}
+
+	return null;
 }
 
 export default class FiveYearJournalPlugin extends Plugin {

@@ -30,8 +30,8 @@
 
 Settings are available in Obsidian plugin settings:
 
-- `Filter property` (`filterField`): any frontmatter field, e.g. `tags`, `type`, `noteType`.
-- `Filter values` (`filterValues`): comma-separated values, e.g. `journal, daily`.
+- `Filter property` (`filterField`): selected from discovered properties in your vault (with `Refresh properties` button).
+- `Filter values` (`filterValues`): comma-separated values with autocomplete suggestions for the selected property.
 - `Filter match mode` (`filterMatchMode`): `any` or `all`.
 - `Date property` (`dateField`): frontmatter date field (default: `created`).
 - `Years back` (`yearsBack`): number of historical sections (default: `4`).
@@ -95,6 +95,7 @@ When adding/changing features, update:
 
 ### Change notes
 
+- `0.1.4`: Added property picker from discovered vault frontmatter fields and value suggestions to reduce filter typos.
 - `0.1.3`: Added configurable filter by any property, configurable date field/range/preview limits, and save-based settings flow.
 - `0.1.2`: Performance refactor with indexed journal lookup, cached previews, and concurrent preview loading.
 - `0.1.1`: Fixed historical year section targeting to be relative to current year and removed show-more collapsing.
